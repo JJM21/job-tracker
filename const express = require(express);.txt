@@ -1,0 +1,55 @@
+const express = require("express");
+const sqlite3 = require("sqlite3").verbose();
+const cors = require("cors");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const db = new sqlite3.Database("jobs.db");
+
+db.run(`
+  CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    phone TEXT,
+    problem TEXT,
+    assignedTo TEXT,
+    status TEXT,
+    partsUsed TEXT,
+    quote TEXT,
+    signedOff INTEGER
+  )
+`);
+
+app.get("/jobs", (req, res) => {
+  db.all("SELECT * FROM jobs", [], (err, rows) => {
+    res.json(rows);
+  });
+});
+
+app.post("/jobs", (req, res) => {
+  const j = req.body;
+  db.run(
+    `INSERT INTO jobs
+     (name, phone, problem, assignedTo, status, partsUsed, quote, signedOff)
+     VALUES (?, ?, ?, ?, 'New', '', '', 0)`,
+    [j.name, j.phone, j.problem, j.assignedTo || ""],
+    function () {
+      res.json({ id: this.lastID });
+    }
+  );
+});
+
+app.put("/jobs/:id", (req, res) => {
+  const j = req.body;
+  db.run(
+    `UPDATE jobs SET status=?, partsUsed=?, quote=?, signedOff=? WHERE id=?`,
+    [j.status, j.partsUsed, j.quote, j.signedOff ? 1 : 0, req.params.id],
+    () => res.sendStatus(200)
+  );
+});
+
+app.listen(3000, () => {
+  console.log("Server running on http://localhost:3000");
+});

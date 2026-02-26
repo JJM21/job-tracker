@@ -1,46 +1,39 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Advanced Job System</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Job Management System</title>
 
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/signature_pad@4.1.5/dist/signature_pad.umd.min.js"></script>
 
 <style>
-body{background:#f4f6f9}
+body { background:#f4f6f9; }
 .container-box{
-max-width:900px;
-margin:auto;
-margin-top:40px;
-background:white;
-padding:25px;
-border-radius:10px;
-box-shadow:0 0 15px rgba(0,0,0,.08)
+    max-width:900px;
+    margin:auto;
+    margin-top:40px;
+    background:white;
+    padding:25px;
+    border-radius:10px;
+    box-shadow:0 0 15px rgba(0,0,0,.08);
 }
-.job-card{
-border:1px solid #ddd;
-padding:15px;
-border-radius:8px;
-margin-bottom:20px
-}
-canvas{
-border:1px solid #000;
-background:white;
-}
-.hidden{display:none}
+canvas{ border:2px solid #ccc; border-radius:6px; }
+.job-card{ border:1px solid #ddd; padding:15px; border-radius:8px; margin-bottom:20px; }
+.hidden{ display:none; }
 </style>
 </head>
 <body>
 
 <div class="container">
 
+<!-- LOGIN / REGISTER -->
 <div id="authBox" class="container-box">
-<h3>Login</h3>
-
-<input id="loginEmail" class="form-control mb-2" placeholder="Email">
-<input id="loginPassword" type="password" class="form-control mb-3" placeholder="Password">
-<button onclick="login()" class="btn btn-primary w-100 mb-3">Login</button>
+<h3 class="mb-3">Job System Login</h3>
+<input id="email" class="form-control mb-2" placeholder="Email">
+<input id="password" type="password" class="form-control mb-3" placeholder="Password">
+<button onclick="login()" class="btn btn-primary w-100 mb-2">Login</button>
 
 <hr>
 
@@ -48,12 +41,13 @@ background:white;
 <input id="regEmail" class="form-control mb-2" placeholder="Email">
 <input id="regPassword" type="password" class="form-control mb-2" placeholder="Password">
 <select id="role" class="form-control mb-3">
-<option value="employee">Employee</option>
-<option value="admin">Admin</option>
+  <option value="employee">Employee</option>
+  <option value="admin">Admin / Employer</option>
 </select>
 <button onclick="register()" class="btn btn-success w-100">Register</button>
 </div>
 
+<!-- DASHBOARD -->
 <div id="dashboard" class="hidden container-box">
 <div class="d-flex justify-content-between">
 <h3>Dashboard</h3>
@@ -62,208 +56,169 @@ background:white;
 
 <hr>
 
+<!-- Admin Panel -->
 <div id="adminPanel" class="hidden">
 <h4>Create Job</h4>
 <input id="jobTitle" class="form-control mb-2" placeholder="Job Title">
 <textarea id="jobDescription" class="form-control mb-2" placeholder="Job Description"></textarea>
-<input id="assignTo" type="number" class="form-control mb-3" placeholder="Assign to Employee ID">
+<input id="assignTo" class="form-control mb-3" placeholder="Assign to Employee Email">
 <button onclick="createJob()" class="btn btn-dark mb-4">Create Job</button>
 </div>
 
-<h4>Jobs</h4>
+<h4>Your Jobs</h4>
 <div id="jobs"></div>
-
 </div>
-</div>
-
-<script>
-let token = localStorage.getItem("token");
-let role = localStorage.getItem("role");
-const API = "http://localhost:3000";
-
-function init(){
-if(token){
-authBox.classList.add("hidden");
-dashboard.classList.remove("hidden");
-if(role==="admin") adminPanel.classList.remove("hidden");
-loadJobs();
-}
-}
-init();
-
-async function login(){
-const res=await fetch(API+"/login",{
-method:"POST",
-headers:{'Content-Type':'application/json'},
-body:JSON.stringify({
-email:loginEmail.value,
-password:loginPassword.value
-})
-});
-const data=await res.json();
-if(data.token){
-localStorage.setItem("token",data.token);
-localStorage.setItem("role",data.role);
-location.reload();
-}else alert(data.error);
-}
-
-async function register(){
-const res=await fetch(API+"/register",{
-method:"POST",
-headers:{'Content-Type':'application/json'},
-body:JSON.stringify({
-email:regEmail.value,
-password:regPassword.value,
-role:role.value
-})
-});
-const data=await res.json();
-alert(data.message||data.error);
-}
-
-function logout(){
-localStorage.clear();
-location.reload();
-}
-
-async function createJob(){
-await fetch(API+"/jobs",{
-method:"POST",
-headers:{
-'Content-Type':'application/json',
-'Authorization':token
-},
-body:JSON.stringify({
-title:jobTitle.value,
-description:jobDescription.value,
-assignedTo:assignTo.value
-})
-});
-loadJobs();
-}
-
-async function loadJobs(){
-const res=await fetch(API+"/jobs",{headers:{'Authorization':token}});
-const jobs=await res.json();
-jobsDiv.innerHTML="";
-
-jobs.forEach(job=>{
-let html=`
-<div class="job-card">
-<h5>${job.title}</h5>
-<p>${job.description}</p>
-<b>Status:</b> ${job.status}<br>
-<b>Assigned:</b> ${job.assignedTo}<br><br>
-
-<h6>Add Note</h6>
-<textarea id="note-${job.id}" class="form-control mb-2"></textarea>
-<button onclick="addNote(${job.id})" class="btn btn-secondary btn-sm mb-3">Save Note</button>
-
-<h6>Upload File</h6>
-<input type="file" id="file-${job.id}" class="form-control mb-2">
-<button onclick="uploadFile(${job.id})" class="btn btn-info btn-sm mb-3">Upload</button>
-
-<h6>Signature</h6>
-<canvas id="canvas-${job.id}" width="300" height="120"></canvas><br>
-<button onclick="clearCanvas(${job.id})" class="btn btn-warning btn-sm mt-1">Clear</button>
-<button onclick="saveSignature(${job.id})" class="btn btn-success btn-sm mt-1">Save Signature</button>
-<br><br>
-`;
-
-if(role==="employee" && job.status!=="Completed"){
-html+=`<button onclick="completeJob(${job.id})" class="btn btn-success">Complete Job</button>`;
-}
-
-html+="</div>";
-jobsDiv.innerHTML+=html;
-
-setTimeout(()=>initCanvas(job.id),100);
-});
-}
-
-async function completeJob(id){
-await fetch(API+`/jobs/${id}/complete`,{
-method:"PUT",
-headers:{'Authorization':token}
-});
-loadJobs();
-}
-
-async function addNote(id){
-await fetch(API+`/jobs/${id}/notes`,{
-method:"POST",
-headers:{
-'Content-Type':'application/json',
-'Authorization':token
-},
-body:JSON.stringify({
-note:document.getElementById("note-"+id).value
-})
-});
-alert("Note saved");
-}
-
-async function uploadFile(id){
-const file=document.getElementById("file-"+id).files[0];
-const formData=new FormData();
-formData.append("file",file);
-
-await fetch(API+`/jobs/${id}/upload`,{
-method:"POST",
-headers:{'Authorization':token},
-body:formData
-});
-alert("File uploaded");
-}
-
-function initCanvas(id){
-const canvas=document.getElementById("canvas-"+id);
-if(!canvas) return;
-const ctx=canvas.getContext("2d");
-let drawing=false;
-
-canvas.onmousedown=()=>drawing=true;
-canvas.onmouseup=()=>drawing=false;
-canvas.onmousemove=(e)=>{
-if(!drawing) return;
-ctx.lineWidth=2;
-ctx.lineCap="round";
-ctx.strokeStyle="black";
-ctx.lineTo(e.offsetX,e.offsetY);
-ctx.stroke();
-ctx.beginPath();
-ctx.moveTo(e.offsetX,e.offsetY);
-};
-}
-
-function clearCanvas(id){
-const canvas=document.getElementById("canvas-"+id);
-canvas.getContext("2d").clearRect(0,0,canvas.width,canvas.height);
-}
-
-async function saveSignature(id){
-const canvas=document.getElementById("canvas-"+id);
-const image=canvas.toDataURL("image/png");
-
-await fetch(API+`/jobs/${id}/sign`,{
-method:"POST",
-headers:{
-'Content-Type':'application/json',
-'Authorization':token
-},
-body:JSON.stringify({image})
-});
-alert("Signature saved");
-}
-
-</script>
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
-const socket=io();
-socket.on("jobCreated",()=>loadJobs());
-socket.on("jobCompleted",()=>loadJobs());
+let token = localStorage.getItem("token");
+let role = localStorage.getItem("role");
+const API = ""; // empty string to use same domain
+
+// LOGIN
+async function login(){
+  const res = await fetch(API+"/login",{
+    method:"POST",
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({email:email.value,password:password.value})
+  });
+  const data = await res.json();
+  if(data.token){
+    localStorage.setItem("token",data.token);
+    localStorage.setItem("role",data.role);
+    init();
+  }else{ alert(data.error); }
+}
+
+// REGISTER
+async function register(){
+  const res = await fetch(API+"/register",{
+    method:"POST",
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({
+      email: document.getElementById("regEmail").value,
+      password: document.getElementById("regPassword").value,
+      role: document.getElementById("role").value
+    })
+  });
+  const data = await res.json();
+  alert(data.message || data.error);
+}
+
+// INIT
+function init(){
+  token = localStorage.getItem("token");
+  role = localStorage.getItem("role");
+  if(token){
+    authBox.classList.add("hidden");
+    dashboard.classList.remove("hidden");
+    if(role==="admin"){ adminPanel.classList.remove("hidden"); }
+    loadJobs();
+  }
+}
+init();
+
+// LOGOUT
+function logout(){
+  localStorage.clear();
+  location.reload();
+}
+
+// CREATE JOB
+async function createJob(){
+  const res = await fetch(API+"/jobs",{
+    method:"POST",
+    headers:{'Content-Type':'application/json','Authorization':token},
+    body:JSON.stringify({
+      title:jobTitle.value,
+      description:jobDescription.value,
+      assignedEmail:assignTo.value
+    })
+  });
+  const data = await res.json();
+  alert(data.message || data.error);
+  loadJobs();
+}
+
+// LOAD JOBS
+async function loadJobs(){
+  const res = await fetch(API+"/jobs",{headers:{'Authorization':token}});
+  const jobs = await res.json();
+  const jobsDiv = document.getElementById("jobs");
+  jobsDiv.innerHTML="";
+  jobs.forEach(job=>{
+    let html = `<div class="job-card">
+      <h5>${job.title}</h5>
+      <p>${job.description}</p>
+      <b>Status:</b> ${job.status}<br>
+      <b>Notes:</b> ${job.notes || "None"}<br>
+      ${job.image ? `<img src="/${job.image}" width="200" class="mt-2"/>` : ""}
+      <hr>`;
+    if(role==="employee"){
+      html+=`
+      <textarea id="note-${job.id}" class="form-control mb-2" placeholder="Add notes"></textarea>
+      <input type="file" id="file-${job.id}" class="form-control mb-2">
+      <button onclick="upload(${job.id})" class="btn btn-secondary btn-sm mb-2">Upload Image</button>
+      <button onclick="addNote(${job.id})" class="btn btn-info btn-sm mb-2">Save Note</button>
+      <h6>Customer Signature</h6>
+      <canvas id="sig-${job.id}" width="300" height="120"></canvas>
+      <button onclick="saveSignature(${job.id})" class="btn btn-warning btn-sm mt-2">Save Signature</button>
+      <button onclick="completeJob(${job.id})" class="btn btn-success btn-sm mt-2">Complete Job</button>`;
+    }
+    html+="</div>";
+    jobsDiv.innerHTML+=html;
+    if(role==="employee"){
+      const canvas = document.getElementById(`sig-${job.id}`);
+      if(canvas) new SignaturePad(canvas);
+    }
+  });
+}
+
+// ADD NOTE
+async function addNote(id){
+  const note = document.getElementById(`note-${id}`).value;
+  await fetch(`/jobs/${id}/note`,{
+    method:"POST",
+    headers:{'Content-Type':'application/json','Authorization':token},
+    body:JSON.stringify({note})
+  });
+  loadJobs();
+}
+
+// UPLOAD IMAGE
+async function upload(id){
+  const fileInput = document.getElementById(`file-${id}`);
+  const formData = new FormData();
+  formData.append("image",fileInput.files[0]);
+  await fetch(`/jobs/${id}/upload`,{method:"POST",headers:{'Authorization':token},body:formData});
+  loadJobs();
+}
+
+// SAVE SIGNATURE
+async function saveSignature(id){
+  const canvas = document.getElementById(`sig-${id}`);
+  const dataURL = canvas.toDataURL();
+  await fetch(`/jobs/${id}/sign`,{
+    method:"POST",
+    headers:{'Content-Type':'application/json','Authorization':token},
+    body:JSON.stringify({signature:dataURL})
+  });
+  alert("Signature saved");
+}
+
+// COMPLETE JOB
+async function completeJob(id){
+  const res = await fetch(`/jobs/${id}/complete`,{method:"PUT",headers:{'Authorization':token}});
+  const data = await res.json();
+  alert(data.message);
+  loadJobs();
+}
+
+// SOCKET.IO
+const socket = io();
+socket.on("jobCreated", data=>{ alert("New job created: "+data.title); loadJobs(); });
+socket.on("jobUpdated", ()=>loadJobs());
+socket.on("jobCompleted", ()=>loadJobs());
 </script>
 
 </body>

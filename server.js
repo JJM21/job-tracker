@@ -1,271 +1,197 @@
-// ============================
-// REQUIRED MODULES
-// ============================
+require("dotenv").config();
 
 const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
-const cors = require("cors");
+const nodemailer = require("nodemailer");
+const path = require("path");
 const multer = require("multer");
 const fs = require("fs");
-const path = require("path");
 const http = require("http");
 const { Server } = require("socket.io");
 
-// ============================
-// APP SETUP
-// ============================
-
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+const io = new Server(server);
 
-app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+// Use PORT from environment (Render) or fallback to 3000 for local
+const PORT = process.env.PORT || 3000;
+const SECRET = process.env.JWT_SECRET;
+
+// Middleware
+app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-const SECRET = "your_secret_key";
+// File upload setup
+const upload = multer({ dest: "uploads/" });
 
-// ============================
-// DATABASE
-// ============================
-
+// Database
 const db = new sqlite3.Database("./database.db");
 
+// Create tables
 db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE,
+    password TEXT,
+    role TEXT
+  )`);
 
-db.run(`CREATE TABLE IF NOT EXISTS users (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-email TEXT UNIQUE,
-password TEXT,
-role TEXT
-)`);
-
-db.run(`CREATE TABLE IF NOT EXISTS jobs (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-title TEXT,
-description TEXT,
-status TEXT DEFAULT 'Pending',
-assignedTo INTEGER
-)`);
-
-db.run(`CREATE TABLE IF NOT EXISTS notes (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-jobId INTEGER,
-note TEXT
-)`);
-
-db.run(`CREATE TABLE IF NOT EXISTS files (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-jobId INTEGER,
-filePath TEXT
-)`);
-
-db.run(`CREATE TABLE IF NOT EXISTS signatures (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-jobId INTEGER,
-imagePath TEXT
-)`);
-
+  db.run(`CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT,
+    description TEXT,
+    status TEXT DEFAULT 'Pending',
+    notes TEXT,
+    image TEXT,
+    signature TEXT,
+    assignedTo INTEGER,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
 });
 
-// ============================
-// AUTH MIDDLEWARE
-// ============================
-
-function authenticate(req, res, next) {
-const token = req.headers["authorization"];
-if (!token) return res.status(401).json({ error: "No token" });
-
-jwt.verify(token, SECRET, (err, user) => {
-if (err) return res.status(403).json({ error: "Invalid token" });
-req.user = user;
-next();
+// Email setup
+const transporter = nodemailer.createTransport({
+  host: process.env.EMAIL_HOST,
+  port: Number(process.env.EMAIL_PORT),
+  secure: false,
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+  tls: { rejectUnauthorized: false }
 });
+
+async function sendEmail(to, subject, text) {
+  try {
+    await transporter.sendMail({
+      from: process.env.EMAIL_FROM,
+      to,
+      subject,
+      text,
+    });
+    console.log("Email sent to", to);
+  } catch (err) {
+    console.error("Email error:", err);
+  }
 }
 
-// ============================
+// Auth middleware
+function auth(req, res, next) {
+  const token = req.headers.authorization;
+  if (!token) return res.status(401).json({ error: "No token provided" });
+
+  try {
+    const decoded = jwt.verify(token, SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    res.status(401).json({ error: "Invalid token" });
+  }
+}
+
 // REGISTER
-// ============================
-
 app.post("/register", async (req, res) => {
-const { email, password, role } = req.body;
+  const { email, password, role } = req.body;
+  const hashedPassword = await bcrypt.hash(password, 10);
 
-const hashed = await bcrypt.hash(password, 10);
+  db.run(
+    `INSERT INTO users (email, password, role) VALUES (?, ?, ?)`,
+    [email, hashedPassword, role],
+    function (err) {
+      if (err) return res.status(400).json({ error: "User already exists" });
 
-db.run(
-"INSERT INTO users (email, password, role) VALUES (?, ?, ?)",
-[email, hashed, role],
-function (err) {
-if (err) return res.json({ error: "User exists" });
-res.json({ message: "Registered successfully" });
-}
-);
+      sendEmail(email, "Welcome to Job System", "Your account has been created.");
+      res.json({ message: "User registered successfully" });
+    }
+  );
 });
 
-// ============================
 // LOGIN
-// ============================
-
 app.post("/login", (req, res) => {
-const { email, password } = req.body;
+  const { email, password } = req.body;
 
-db.get("SELECT * FROM users WHERE email = ?", [email], async (err, user) => {
-if (!user) return res.json({ error: "User not found" });
+  db.get(`SELECT * FROM users WHERE email = ?`, [email], async (err, user) => {
+    if (!user) return res.status(400).json({ error: "User not found" });
 
-const valid = await bcrypt.compare(password, user.password);
-if (!valid) return res.json({ error: "Wrong password" });
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) return res.status(400).json({ error: "Invalid password" });
 
-const token = jwt.sign(
-{ id: user.id, role: user.role },
-SECRET
-);
-
-res.json({ token, role: user.role });
-});
+    const token = jwt.sign({ id: user.id, role: user.role }, SECRET, { expiresIn: "8h" });
+    res.json({ token, role: user.role });
+  });
 });
 
-// ============================
 // CREATE JOB
-// ============================
+app.post("/jobs", auth, (req, res) => {
+  const { title, description, assignedEmail } = req.body;
 
-app.post("/jobs", authenticate, (req, res) => {
+  db.get(`SELECT id FROM users WHERE email=?`, [assignedEmail], (err, user) => {
+    if (!user) return res.status(400).json({ error: "Assigned user not found" });
 
-if (req.user.role !== "admin")
-return res.status(403).json({ error: "Admins only" });
+    db.run(
+      `INSERT INTO jobs (title, description, assignedTo) VALUES (?, ?, ?)`,
+      [title, description, user.id],
+      function (err) {
+        if (err) return res.status(400).json({ error: err.message });
 
-const { title, description, assignedTo } = req.body;
-
-db.run(
-"INSERT INTO jobs (title, description, assignedTo) VALUES (?, ?, ?)",
-[title, description, assignedTo],
-function () {
-io.emit("jobCreated");
-res.json({ message: "Job created" });
-}
-);
-
+        sendEmail(assignedEmail, "New Job Assigned", `You have a new job: ${title}`);
+        io.emit("jobCreated", { title });
+        res.json({ message: "Job created successfully" });
+      }
+    );
+  });
 });
 
-// ============================
 // GET JOBS
-// ============================
-
-app.get("/jobs", authenticate, (req, res) => {
-
-if (req.user.role === "admin") {
-db.all("SELECT * FROM jobs", (err, rows) => {
-res.json(rows);
-});
-} else {
-db.all(
-"SELECT * FROM jobs WHERE assignedTo = ?",
-[req.user.id],
-(err, rows) => {
-res.json(rows);
-});
-}
-
+app.get("/jobs", auth, (req, res) => {
+  db.all(`SELECT * FROM jobs`, [], (err, rows) => res.json(rows));
 });
 
-// ============================
-// COMPLETE JOB
-// ============================
-
-app.put("/jobs/:id/complete", authenticate, (req, res) => {
-
-db.run(
-"UPDATE jobs SET status='Completed' WHERE id=?",
-[req.params.id],
-() => {
-io.emit("jobCompleted");
-res.json({ message: "Job completed" });
-}
-);
-
-});
-
-// ============================
 // ADD NOTE
-// ============================
-
-app.post("/jobs/:id/notes", authenticate, (req, res) => {
-
-db.run(
-"INSERT INTO notes (jobId, note) VALUES (?, ?)",
-[req.params.id, req.body.note],
-() => res.json({ message: "Note saved" })
-);
-
+app.post("/jobs/:id/note", auth, (req, res) => {
+  const { note } = req.body;
+  db.run(`UPDATE jobs SET notes=? WHERE id=?`, [note, req.params.id], function () {
+    io.emit("jobUpdated");
+    res.json({ message: "Note added" });
+  });
 });
 
-// ============================
-// FILE UPLOAD
-// ============================
-
-if (!fs.existsSync("uploads")) {
-fs.mkdirSync("uploads");
-}
-
-const storage = multer.diskStorage({
-destination: function (req, file, cb) {
-cb(null, "uploads/");
-},
-filename: function (req, file, cb) {
-cb(null, Date.now() + "-" + file.originalname);
-}
+// UPLOAD IMAGE
+app.post("/jobs/:id/upload", auth, upload.single("image"), (req, res) => {
+  const filePath = req.file.path;
+  db.run(`UPDATE jobs SET image=? WHERE id=?`, [filePath, req.params.id], function () {
+    io.emit("jobUpdated");
+    res.json({ message: "Image uploaded" });
+  });
 });
 
-const upload = multer({ storage: storage });
-
-app.post("/jobs/:id/upload", authenticate, upload.single("file"), (req, res) => {
-
-db.run(
-"INSERT INTO files (jobId, filePath) VALUES (?, ?)",
-[req.params.id, req.file.filename],
-() => res.json({ message: "File uploaded" })
-);
-
-});
-
-// ============================
 // SAVE SIGNATURE
-// ============================
-
-app.post("/jobs/:id/sign", authenticate, (req, res) => {
-
-const base64Data = req.body.image.replace(/^data:image\/png;base64,/, "");
-const fileName = `signature-${Date.now()}.png`;
-const filePath = path.join("uploads", fileName);
-
-fs.writeFile(filePath, base64Data, "base64", function (err) {
-if (err) return res.status(500).json({ error: "Signature save failed" });
-
-db.run(
-"INSERT INTO signatures (jobId, imagePath) VALUES (?, ?)",
-[req.params.id, fileName],
-() => res.json({ message: "Signature saved" })
-);
+app.post("/jobs/:id/sign", auth, (req, res) => {
+  const { signature } = req.body;
+  db.run(`UPDATE jobs SET signature=? WHERE id=?`, [signature, req.params.id], function () {
+    io.emit("jobUpdated");
+    res.json({ message: "Signature saved" });
+  });
 });
 
+// COMPLETE JOB
+app.put("/jobs/:id/complete", auth, (req, res) => {
+  db.run(`UPDATE jobs SET status='Completed' WHERE id=?`, [req.params.id], function () {
+    io.emit("jobCompleted", { jobId: req.params.id });
+    res.json({ message: "Job completed" });
+  });
 });
 
-// ============================
-// SOCKET CONNECTION
-// ============================
+// Serve uploaded files
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
+// Socket.io connections
 io.on("connection", (socket) => {
-console.log("User connected");
+  console.log("User connected:", socket.id);
+  socket.on("disconnect", () => console.log("User disconnected:", socket.id));
 });
 
-// ============================
-// START SERVER
-// ============================
-
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-  console.log("Server running on port " + PORT);
-});
+// Start server
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));

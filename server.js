@@ -15,7 +15,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-// Use PORT from environment (Render) or fallback to 3000 for local
+// PORT and JWT secret
 const PORT = process.env.PORT || 3000;
 const SECRET = process.env.JWT_SECRET;
 
@@ -23,13 +23,13 @@ const SECRET = process.env.JWT_SECRET;
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// File upload setup
+// File upload
 const upload = multer({ dest: "uploads/" });
 
 // Database
 const db = new sqlite3.Database("./database.db");
 
-// Create tables
+// Tables
 db.serialize(() => {
   db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,6 +49,20 @@ db.serialize(() => {
     assignedTo INTEGER,
     createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS stock (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_name TEXT UNIQUE,
+    quantity INTEGER,
+    unit TEXT
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS job_materials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER,
+    stock_id INTEGER,
+    quantity_used INTEGER
+  )`);
 });
 
 // Email setup
@@ -65,12 +79,7 @@ const transporter = nodemailer.createTransport({
 
 async function sendEmail(to, subject, text) {
   try {
-    await transporter.sendMail({
-      from: process.env.EMAIL_FROM,
-      to,
-      subject,
-      text,
-    });
+    await transporter.sendMail({ from: process.env.EMAIL_FROM, to, subject, text });
     console.log("Email sent to", to);
   } catch (err) {
     console.error("Email error:", err);
@@ -86,7 +95,7 @@ function auth(req, res, next) {
     const decoded = jwt.verify(token, SECRET);
     req.user = decoded;
     next();
-  } catch (err) {
+  } catch {
     res.status(401).json({ error: "Invalid token" });
   }
 }
@@ -96,8 +105,7 @@ app.post("/register", async (req, res) => {
   const { email, password, role } = req.body;
   const hashedPassword = await bcrypt.hash(password, 10);
 
-  db.run(
-    `INSERT INTO users (email, password, role) VALUES (?, ?, ?)`,
+  db.run(`INSERT INTO users (email, password, role) VALUES (?, ?, ?)`,
     [email, hashedPassword, role],
     function (err) {
       if (err) return res.status(400).json({ error: "User already exists" });
@@ -130,8 +138,7 @@ app.post("/jobs", auth, (req, res) => {
   db.get(`SELECT id FROM users WHERE email=?`, [assignedEmail], (err, user) => {
     if (!user) return res.status(400).json({ error: "Assigned user not found" });
 
-    db.run(
-      `INSERT INTO jobs (title, description, assignedTo) VALUES (?, ?, ?)`,
+    db.run(`INSERT INTO jobs (title, description, assignedTo) VALUES (?, ?, ?)`,
       [title, description, user.id],
       function (err) {
         if (err) return res.status(400).json({ error: err.message });
@@ -146,7 +153,17 @@ app.post("/jobs", auth, (req, res) => {
 
 // GET JOBS
 app.get("/jobs", auth, (req, res) => {
-  db.all(`SELECT * FROM jobs`, [], (err, rows) => res.json(rows));
+  if (req.user.role === "employee") {
+    db.all(`SELECT * FROM jobs WHERE assignedTo = ?`, [req.user.id], (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows);
+    });
+  } else {
+    db.all(`SELECT * FROM jobs`, [], (err, rows) => {
+      if (err) return res.status(500).json({ error: err.message });
+      res.json(rows);
+    });
+  }
 });
 
 // ADD NOTE
@@ -160,8 +177,7 @@ app.post("/jobs/:id/note", auth, (req, res) => {
 
 // UPLOAD IMAGE
 app.post("/jobs/:id/upload", auth, upload.single("image"), (req, res) => {
-  const filePath = req.file.path;
-  db.run(`UPDATE jobs SET image=? WHERE id=?`, [filePath, req.params.id], function () {
+  db.run(`UPDATE jobs SET image=? WHERE id=?`, [req.file.path, req.params.id], function () {
     io.emit("jobUpdated");
     res.json({ message: "Image uploaded" });
   });
@@ -184,10 +200,75 @@ app.put("/jobs/:id/complete", auth, (req, res) => {
   });
 });
 
-// Serve uploaded files
+// STOCK ROUTES
+app.get("/stock", auth, (req, res) => {
+  if (req.user.role !== "stock_manager") return res.status(403).json({ error: "Only Stock Manager allowed" });
+
+  db.all(`SELECT * FROM stock`, [], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
+
+app.post("/stock", auth, (req, res) => {
+  if (req.user.role !== "stock_manager") return res.status(403).json({ error: "Only Stock Manager allowed" });
+
+  const { item_name, quantity, unit } = req.body;
+  db.run(`INSERT INTO stock (item_name, quantity, unit) VALUES (?, ?, ?)`,
+    [item_name, quantity, unit],
+    function (err) {
+      if (err) return res.status(400).json({ error: err.message });
+      res.json({ message: "Stock added successfully" });
+    }
+  );
+});
+
+// ISSUE STOCK TO JOB
+app.post("/jobs/:id/issue-stock", auth, (req, res) => {
+  if (req.user.role !== "stock_manager") return res.status(403).json({ error: "Only Stock Manager can issue stock" });
+
+  const { stock_id, quantity } = req.body;
+  const jobId = req.params.id;
+
+  db.get(`SELECT quantity FROM stock WHERE id=?`, [stock_id], (err, stock) => {
+    if (!stock) return res.status(400).json({ error: "Stock not found" });
+    if (stock.quantity < quantity) return res.status(400).json({ error: "Not enough stock available" });
+
+    db.run(`UPDATE stock SET quantity = quantity - ? WHERE id=?`, [quantity, stock_id], function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+
+      db.run(`INSERT INTO job_materials (job_id, stock_id, quantity_used) VALUES (?, ?, ?)`,
+        [jobId, stock_id, quantity], function (err) {
+          if (err) return res.status(500).json({ error: err.message });
+          res.json({ message: "Stock issued successfully" });
+        });
+    });
+  });
+});
+
+// GET ISSUED STOCK FOR JOB
+app.get("/jobs/:id/materials", auth, (req, res) => {
+  if (req.user.role !== "stock_manager" && req.user.role !== "admin") {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+
+  const jobId = req.params.id;
+  const query = `
+    SELECT jm.quantity_used, s.item_name, s.unit
+    FROM job_materials jm
+    JOIN stock s ON jm.stock_id = s.id
+    WHERE jm.job_id = ?`;
+
+  db.all(query, [jobId], (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
+  });
+});
+
+// Serve uploads
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-// Socket.io connections
+// Socket.io
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
   socket.on("disconnect", () => console.log("User disconnected:", socket.id));

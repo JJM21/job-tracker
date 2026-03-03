@@ -22,6 +22,8 @@ body { background:#f4f6f9; }
 canvas{ border:2px solid #ccc; border-radius:6px; }
 .job-card{ border:1px solid #ddd; padding:15px; border-radius:8px; margin-bottom:20px; }
 .hidden{ display:none; }
+.issue-stock{ margin-top:10px; }
+.issue-stock select, .issue-stock input{ margin-bottom:5px; }
 </style>
 </head>
 <body>
@@ -43,6 +45,7 @@ canvas{ border:2px solid #ccc; border-radius:6px; }
 <select id="role" class="form-control mb-3">
   <option value="employee">Employee</option>
   <option value="admin">Admin / Employer</option>
+  <option value="stock_manager">Stock Manager</option>
 </select>
 <button onclick="register()" class="btn btn-success w-100">Register</button>
 </div>
@@ -73,7 +76,7 @@ canvas{ border:2px solid #ccc; border-radius:6px; }
 <script>
 let token = localStorage.getItem("token");
 let role = localStorage.getItem("role");
-const API = ""; // empty string to use same domain
+const API = "";
 
 // LOGIN
 async function login(){
@@ -154,6 +157,8 @@ async function loadJobs(){
       <b>Notes:</b> ${job.notes || "None"}<br>
       ${job.image ? `<img src="/${job.image}" width="200" class="mt-2"/>` : ""}
       <hr>`;
+    
+    // Employee actions
     if(role==="employee"){
       html+=`
       <textarea id="note-${job.id}" class="form-control mb-2" placeholder="Add notes"></textarea>
@@ -165,12 +170,79 @@ async function loadJobs(){
       <button onclick="saveSignature(${job.id})" class="btn btn-warning btn-sm mt-2">Save Signature</button>
       <button onclick="completeJob(${job.id})" class="btn btn-success btn-sm mt-2">Complete Job</button>`;
     }
+
+    // Stock Manager actions
+    if(role==="stock_manager"){
+      html+=`
+      <div class="issue-stock">
+        <h6>Issue Stock</h6>
+        <select id="stockSelect-${job.id}"></select>
+        <input type="number" id="stockQuantity-${job.id}" placeholder="Quantity" min="1" class="form-control mb-2">
+        <button onclick="issueStock(${job.id})" class="btn btn-primary btn-sm mb-2">Issue Stock</button>
+        <p id="stockMessage-${job.id}"></p>
+        <h6>Issued Stock:</h6>
+        <ul id="issuedStock-${job.id}"></ul>
+      </div>`;
+    }
+
     html+="</div>";
     jobsDiv.innerHTML+=html;
+
     if(role==="employee"){
       const canvas = document.getElementById(`sig-${job.id}`);
       if(canvas) new SignaturePad(canvas);
     }
+
+    if(role==="stock_manager"){
+      loadStock(job.id);
+      loadIssuedStock(job.id);
+    }
+  });
+}
+
+// STOCK FUNCTIONS
+async function loadStock(jobId){
+  const res = await fetch("/stock",{headers:{'Authorization':token}});
+  const stock = await res.json();
+  const select = document.getElementById(`stockSelect-${jobId}`);
+  select.innerHTML = `<option value="">Select Item</option>`;
+  stock.forEach(item=>{
+    const option = document.createElement("option");
+    option.value = item.id;
+    option.textContent = `${item.item_name} (${item.quantity} ${item.unit})`;
+    select.appendChild(option);
+  });
+}
+
+async function issueStock(jobId){
+  const stockId = document.getElementById(`stockSelect-${jobId}`).value;
+  const quantity = Number(document.getElementById(`stockQuantity-${jobId}`).value);
+  const msgEl = document.getElementById(`stockMessage-${jobId}`);
+
+  if(!stockId || !quantity){ msgEl.textContent="Select stock item and quantity"; return; }
+
+  const res = await fetch(`/jobs/${jobId}/issue-stock`,{
+    method:"POST",
+    headers:{'Content-Type':'application/json','Authorization':token},
+    body:JSON.stringify({stock_id:stockId, quantity})
+  });
+  const data = await res.json();
+  msgEl.textContent = data.message || data.error;
+  loadStock(jobId);
+  loadIssuedStock(jobId);
+}
+
+async function loadIssuedStock(jobId){
+  const res = await fetch(`/jobs/${jobId}/materials`,{
+    headers:{'Authorization':token}
+  });
+  const materials = await res.json();
+  const listEl = document.getElementById(`issuedStock-${jobId}`);
+  listEl.innerHTML="";
+  materials.forEach(m=>{
+    const li = document.createElement("li");
+    li.textContent = `${m.item_name} - ${m.quantity_used} ${m.unit}`;
+    listEl.appendChild(li);
   });
 }
 
